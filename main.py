@@ -2,8 +2,10 @@
 VulnLens command-line entry point.
 
 Usage:
-    python main.py <file-or-folder>          # Tier 1 only (fast, offline)
-    python main.py <file-or-folder> --ai     # also run the Tier 2 AI layer
+    python main.py <file-or-folder>                    # Tier 1 text report
+    python main.py <file-or-folder> --ai               # also run the Tier 2 AI layer
+    python main.py <file-or-folder> --format json      # machine-readable JSON
+    python main.py <file-or-folder> --format sarif      # SARIF for GitHub code scanning
 
 Scans Python files with the Tier 1 rule engine and prints a report.
 The report is split into two sections on purpose:
@@ -16,6 +18,7 @@ import sys
 
 from vulnlens.engine import scan_source, Finding
 from vulnlens import ai_layer
+from vulnlens import formats
 
 
 def collect_python_files(target: str) -> list[str]:
@@ -96,6 +99,8 @@ def main(argv=None) -> int:
     parser.add_argument("target", help="A .py file or a folder to scan.")
     parser.add_argument("--ai", action="store_true",
                         help="Also run the Tier 2 AI heuristic pass and analogy layer.")
+    parser.add_argument("--format", choices=["text", "json", "sarif"], default="text",
+                        help="Output format (default: text).")
     args = parser.parse_args(argv)
 
     if not os.path.exists(args.target):
@@ -125,7 +130,19 @@ def main(argv=None) -> int:
             review = ai_layer.heuristic_scan(source, findings)
         results[path] = {"findings": findings, "review": review}
 
-    confirmed_total = print_confirmed(results)
+    confirmed_total = sum(len(d["findings"]) for d in results.values())
+
+    # Machine-readable formats: emit only the structured output (nothing else),
+    # so the result can be piped straight to a file or a CI tool.
+    if args.format == "json":
+        print(formats.to_json(results))
+        return 1 if confirmed_total else 0
+    if args.format == "sarif":
+        print(formats.to_sarif(results))
+        return 1 if confirmed_total else 0
+
+    # Default: human-readable text report.
+    print_confirmed(results)
     review_total = print_needs_review(results, ai_on)
 
     print("\n" + "-" * 70)
