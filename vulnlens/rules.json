@@ -28,5 +28,23 @@
     "severity": "MEDIUM",
     "message": "Hardcoded credential assigned directly in source code.",
     "fix": "Load secrets from environment variables or a secrets manager; never commit them."
+  },
+  "weak-hash": {
+    "cwe": "CWE-327",
+    "severity": "MEDIUM",
+    "message": "MD5 and SHA1 are broken hashes, unsafe for passwords or signatures.",
+    "fix": "Use SHA-256 or stronger (hashlib.sha256); for passwords use bcrypt or argon2."
+  },
+  "unsafe-yaml-load": {
+    "cwe": "CWE-502",
+    "severity": "HIGH",
+    "message": "yaml.load without a safe loader can execute arbitrary code.",
+    "fix": "Use yaml.safe_load() instead of yaml.load()."
+  },
+  "insecure-request": {
+    "cwe": "CWE-295",
+    "severity": "MEDIUM",
+    "message": "TLS certificate verification is disabled (verify=False).",
+    "fix": "Remove verify=False so certificates are validated."
   }
 }

@@ -85,6 +85,25 @@ class RuleEngine(ast.NodeVisitor):
                 and node.func.value.id == "random"):
             self._flag("weak-random", node)
 
+        if (isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "hashlib"
+                and node.func.attr in {"md5", "sha1"}):
+            self._flag("weak-hash", node)
+
+        if (isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "yaml"
+                and node.func.attr == "load"):
+            self._flag("unsafe-yaml-load", node)
+
+        if (isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "requests"):
+            for kw in node.keywords:
+                if kw.arg == "verify" and isinstance(kw.value, ast.Constant) and kw.value.value is False:
+                    self._flag("insecure-request", node)
+
         self.generic_visit(node)   # keep descending into children
 
     # ------------------------------------------------------------------
