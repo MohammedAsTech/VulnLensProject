@@ -1,0 +1,32 @@
+{
+  "dangerous-eval": {
+    "cwe": "CWE-95",
+    "severity": "HIGH",
+    "message": "eval()/exec() executes arbitrary code from its input.",
+    "fix": "Avoid eval/exec on untrusted input; use ast.literal_eval or explicit parsing."
+  },
+  "shell-injection": {
+    "cwe": "CWE-78",
+    "severity": "HIGH",
+    "message": "A shell command built from input can be hijacked to run extra commands.",
+    "fix": "Use subprocess.run with an argument list; avoid os.system and shell=True."
+  },
+  "unsafe-deserialization": {
+    "cwe": "CWE-502",
+    "severity": "HIGH",
+    "message": "pickle.loads on untrusted data can execute arbitrary code.",
+    "fix": "Don't unpickle untrusted data; use JSON or another safe format."
+  },
+  "weak-random": {
+    "cwe": "CWE-330",
+    "severity": "MEDIUM",
+    "message": "The random module is not cryptographically secure; its output is predictable.",
+    "fix": "Use the secrets module (e.g. secrets.token_hex) for tokens, passwords, or keys."
+  },
+  "hardcoded-secret": {
+    "cwe": "CWE-798",
+    "severity": "MEDIUM",
+    "message": "Hardcoded credential assigned directly in source code.",
+    "fix": "Load secrets from environment variables or a secrets manager; never commit them."
+  }
+}
