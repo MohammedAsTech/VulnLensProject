@@ -1,0 +1,3 @@
+# Core scanner (Tier 1) uses only the Python standard library — no deps.
+# The optional Tier 2 AI layer needs the Groq SDK:
+groq>=0.11.0

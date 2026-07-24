@@ -22,6 +22,7 @@ class Finding:
     line: int
     message: str
     fix: str
+    analogy: str = ""  # plain-English explanation, filled in by the AI layer (optional)
 
 
 # Variable names that should never hold a hardcoded string secret.
