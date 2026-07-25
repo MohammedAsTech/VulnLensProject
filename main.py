@@ -53,8 +53,11 @@ def print_confirmed(results: dict) -> int:
         print(f"\n{path}")
         for f in sorted(findings, key=severity_rank):
             total += 1
-            print(f"  [{f.severity:<6}] line {f.line:<4} {f.rule}  ({f.cwe})")
+            taint_tag = "  !! TAINTED FLOW" if f.tainted else ""
+            print(f"  [{f.severity:<6}] line {f.line:<4} {f.rule}  ({f.cwe}){taint_tag}")
             print(f"           {f.message}")
+            if f.tainted:
+                print(f"           >> untrusted input reaches this call (data-flow confirmed)")
             print(f"           fix: {f.fix}")
             if f.analogy:
                 print(f"           in plain terms: {f.analogy}")

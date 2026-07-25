@@ -35,6 +35,7 @@ def to_json(results: dict) -> str:
             out["confirmed"].append({
                 "file": _uri(path), "line": f.line, "rule": f.rule,
                 "cwe": f.cwe, "severity": f.severity,
+                "tainted": f.tainted,
                 "message": f.message, "fix": f.fix,
             })
         for it in data.get("review", []):

@@ -7,19 +7,22 @@ confidence. (The AI heuristic pass in Tier 2 is kept completely separate.)
 
 Design: subclass ast.NodeVisitor. Each rule is a check inside a visit_* method.
 - visit_Import / visit_ImportFrom -> track how names were imported (aliases)
-- visit_Call   -> function/method calls (eval, os.system, pickle.loads, ...)
-- visit_Assign -> assignments (hardcoded secrets)
+- visit_FunctionDef               -> set up per-function taint tracking
+- visit_Call                      -> function/method calls (eval, os.system, ...)
+- visit_Assign                    -> assignments (hardcoded secrets + taint flow)
 
 Import resolution: _resolve_call(node) returns a canonical (module, func) pair,
-so a call is matched no matter how it was imported:
-    import os;          os.system(x)      -> ("os", "system")
-    import os as o;     o.system(x)       -> ("os", "system")
-    from os import system; system(x)      -> ("os", "system")
-This closes the aliased / from-import blind spot.
+so a call is matched no matter how it was imported (os.system / o.system / system).
 
-A match is recorded via self._flag(rule_id, node), which pulls that rule's
-metadata (cwe, severity, message, fix) from rules.json. Detection LOGIC lives
-here; rule METADATA lives in data.
+Taint analysis (intraprocedural): within each function, values that come from an
+untrusted SOURCE (a parameter or input()) are "tainted". Taint propagates through
+assignments. When a tainted value reaches a dangerous call (a SINK), the finding
+is marked tainted=True -- meaning untrusted input actually reaches the danger, the
+highest-priority kind of finding.
+
+A match is recorded via self._flag(rule_id, node, tainted), which pulls that rule's
+metadata (cwe, severity, message, fix) from rules.json. Detection LOGIC lives here;
+rule METADATA lives in data.
 """
 import ast
 from dataclasses import dataclass
@@ -35,77 +38,97 @@ class Finding:
     line: int
     message: str
     fix: str
-    analogy: str = ""  # plain-English explanation, filled in by the AI layer (optional)
+    analogy: str = ""   # filled in by the AI layer (optional)
+    tainted: bool = False  # True if untrusted input flows into this sink
 
 
 # Variable names that should never hold a hardcoded string secret.
 SECRET_NAMES = {"password", "passwd", "secret", "api_key", "apikey", "token"}
 
+# Bare-call sources of untrusted input (beyond function parameters).
+TAINT_SOURCES = {"input"}
+
 
 class RuleEngine(ast.NodeVisitor):
     def __init__(self):
         self.findings: list[Finding] = []
-        # `import os as o`  -> aliases["o"] = "os"      (module alias -> real module)
-        self.aliases: dict[str, str] = {}
-        # `from os import system as run` -> imported["run"] = ("os", "system")
-        self.imported: dict[str, tuple[str, str]] = {}
+        self.aliases: dict[str, str] = {}              # import os as o -> {"o": "os"}
+        self.imported: dict[str, tuple[str, str]] = {}  # from os import system -> {"system": ("os","system")}
+        self.tainted: set[str] = set()                  # tainted var names in the CURRENT function
 
-    def _flag(self, rule_id: str, node):
+    def _flag(self, rule_id: str, node, tainted: bool = False):
         """Record a finding, pulling metadata for rule_id from rules.json."""
         meta = RULES[rule_id]
         self.findings.append(Finding(
-            rule=rule_id,
-            cwe=meta["cwe"],
-            severity=meta["severity"],
-            line=node.lineno,
-            message=meta["message"],
-            fix=meta["fix"],
+            rule=rule_id, cwe=meta["cwe"], severity=meta["severity"],
+            line=node.lineno, message=meta["message"], fix=meta["fix"],
+            tainted=tainted,
         ))
 
     # ------------------------------------------------------------------
-    # IMPORT TRACKING  (runs before the calls that use these names)
+    # IMPORT TRACKING
     # ------------------------------------------------------------------
     def visit_Import(self, node):
-        # import os            -> aliases["os"] = "os"
-        # import os as o       -> aliases["o"]  = "os"
         for a in node.names:
             self.aliases[a.asname or a.name] = a.name
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node):
-        # from os import system            -> imported["system"] = ("os", "system")
-        # from os import system as run     -> imported["run"]    = ("os", "system")
         module = node.module or ""
         for a in node.names:
             self.imported[a.asname or a.name] = (module, a.name)
         self.generic_visit(node)
 
     # ------------------------------------------------------------------
+    # TAINT: per-function scope. Parameters start tainted (untrusted input).
+    # ------------------------------------------------------------------
+    def visit_FunctionDef(self, node):
+        saved = self.tainted                 # support nested functions
+        self.tainted = set()
+        args = node.args
+        for a in args.posonlyargs + args.args + args.kwonlyargs:
+            self.tainted.add(a.arg)
+        if args.vararg:
+            self.tainted.add(args.vararg.arg)
+        if args.kwarg:
+            self.tainted.add(args.kwarg.arg)
+        self.generic_visit(node)             # walk the body (in order) with this taint set
+        self.tainted = saved
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def _is_tainted(self, expr) -> bool:
+        """True if an expression references a tainted name or a source call."""
+        for n in ast.walk(expr):
+            if isinstance(n, ast.Name) and n.id in self.tainted:
+                return True
+            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                    and n.func.id in TAINT_SOURCES):
+                return True
+        return False
+
+    def _call_is_tainted(self, node) -> bool:
+        """True if any argument to this call carries tainted data."""
+        return (any(self._is_tainted(a) for a in node.args)
+                or any(self._is_tainted(kw.value) for kw in node.keywords))
+
+    # ------------------------------------------------------------------
     # CALL RESOLUTION
     # ------------------------------------------------------------------
     def _resolve_call(self, node):
-        """Return a canonical (module, func) for a call node, resolving imports.
-
-        - bare call foo(...)   -> (module, orig) if foo came from `from module import orig`,
-                                  else (None, "foo")   e.g. builtins like eval
-        - dotted call X.m(...) -> (resolved_module, "m"), resolving `import X as Y`
-        - anything else        -> (None, None)
-        """
         func = node.func
         if isinstance(func, ast.Name):
             name = func.id
             if name in self.imported:
-                return self.imported[name]        # (module, original_name)
+                return self.imported[name]
             return (None, name)
         if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
             base = func.value.id
-            module = self.aliases.get(base, base)  # resolve alias; default to the name itself
-            return (module, func.attr)
+            return (self.aliases.get(base, base), func.attr)
         return (None, None)
 
     @staticmethod
-    def _has_kwarg_true(node, name) -> bool:
-        """True if the call has keyword `name` set to the literal True/False sentinel."""
+    def _kwarg_const(node, name):
         for kw in node.keywords:
             if kw.arg == name and isinstance(kw.value, ast.Constant):
                 return kw.value.value
@@ -116,50 +139,50 @@ class RuleEngine(ast.NodeVisitor):
     # ------------------------------------------------------------------
     def visit_Call(self, node):
         module, func = self._resolve_call(node)
+        tainted = self._call_is_tainted(node)
 
-        # --- Rule 1: dangerous-eval (CWE-95) --- builtin, no real module
         if func in {"eval", "exec", "compile"} and module in (None, "builtins"):
-            self._flag("dangerous-eval", node)
+            self._flag("dangerous-eval", node, tainted)
 
-        # --- Rule 2: shell-injection via os.system (CWE-78) ---
         if module == "os" and func == "system":
-            self._flag("shell-injection", node)
+            self._flag("shell-injection", node, tainted)
 
-        # --- Rule 3: subprocess(..., shell=True) (CWE-78) ---
-        if module == "subprocess" and self._has_kwarg_true(node, "shell") is True:
-            self._flag("shell-injection", node)
+        if module == "subprocess" and self._kwarg_const(node, "shell") is True:
+            self._flag("shell-injection", node, tainted)
 
-        # --- Rule 4: unsafe-deserialization via pickle.loads (CWE-502) ---
         if module == "pickle" and func == "loads":
-            self._flag("unsafe-deserialization", node)
+            self._flag("unsafe-deserialization", node, tainted)
 
-        # --- Rule 5: weak-random (CWE-330) ---
         if module == "random":
-            self._flag("weak-random", node)
+            self._flag("weak-random", node, tainted)
 
-        # --- Rule 6: weak-hash (CWE-327) ---
         if module == "hashlib" and func in {"md5", "sha1"}:
-            self._flag("weak-hash", node)
+            self._flag("weak-hash", node, tainted)
 
-        # --- Rule 7: unsafe-yaml-load (CWE-502) ---
         if module == "yaml" and func == "load":
-            self._flag("unsafe-yaml-load", node)
+            self._flag("unsafe-yaml-load", node, tainted)
 
-        # --- Rule 8: insecure-request via requests(..., verify=False) (CWE-295) ---
-        if module == "requests" and self._has_kwarg_true(node, "verify") is False:
-            self._flag("insecure-request", node)
+        if module == "requests" and self._kwarg_const(node, "verify") is False:
+            self._flag("insecure-request", node, tainted)
 
-        self.generic_visit(node)   # keep descending into children
+        self.generic_visit(node)
 
     # ------------------------------------------------------------------
-    # RULES ON ASSIGNMENTS
+    # RULES ON ASSIGNMENTS  (+ taint propagation)
     # ------------------------------------------------------------------
     def visit_Assign(self, node):
-        # --- Rule 9: hardcoded-secret (CWE-798) ---
+        # Rule: hardcoded-secret (CWE-798)
         for target in node.targets:
             if isinstance(target, ast.Name) and target.id.lower() in SECRET_NAMES:
                 if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
                     self._flag("hardcoded-secret", node)
+
+        # Taint propagation: if the right-hand side is tainted, the assigned
+        # names become tainted too (e.g. cmd = "ls " + user_input).
+        if self._is_tainted(node.value):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    self.tainted.add(target.id)
 
         self.generic_visit(node)
 
