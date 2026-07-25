@@ -16,21 +16,10 @@ import argparse
 import os
 import sys
 
-from vulnlens.engine import scan_source, Finding
+from vulnlens.engine import Finding
+from vulnlens import scanner
 from vulnlens import ai_layer
 from vulnlens import formats
-
-
-def collect_python_files(target: str) -> list[str]:
-    """Return a list of .py files for a single file or a whole folder."""
-    if os.path.isfile(target):
-        return [target] if target.endswith(".py") else []
-    files = []
-    for root, _dirs, names in os.walk(target):
-        for name in names:
-            if name.endswith(".py"):
-                files.append(os.path.join(root, name))
-    return sorted(files)
 
 
 def severity_rank(finding: Finding) -> int:
@@ -99,7 +88,7 @@ def main(argv=None) -> int:
         prog="vulnlens",
         description="Scan Python code for security issues (Tier 1 rules + optional Tier 2 AI).",
     )
-    parser.add_argument("target", help="A .py file or a folder to scan.")
+    parser.add_argument("target", help="A .py/.cpp file or a folder to scan.")
     parser.add_argument("--ai", action="store_true",
                         help="Also run the Tier 2 AI heuristic pass and analogy layer.")
     parser.add_argument("--format", choices=["text", "json", "sarif"], default="text",
@@ -110,10 +99,16 @@ def main(argv=None) -> int:
         print(f"error: path not found: {args.target}", file=sys.stderr)
         return 2
 
-    files = collect_python_files(args.target)
+    files = scanner.collect_files(args.target)
     if not files:
-        print("No Python files found to scan.")
+        print("No supported source files (.py, .c/.cpp) found to scan.")
         return 0
+
+    # If C++ files are present but tree-sitter isn't installed, warn once.
+    if (any(scanner.language_of(p) == "cpp" for p in files)
+            and not scanner.cpp_engine.cpp_available()):
+        print("note: C++ files found but tree-sitter isn't installed; skipping C++. "
+              "Install with: pip install tree-sitter tree-sitter-cpp\n", file=sys.stderr)
 
     ai_on = args.ai
     if ai_on and not ai_layer.ai_available():
@@ -124,13 +119,12 @@ def main(argv=None) -> int:
     # Scan every file. Store Tier 1 findings and (optionally) Tier 2 review items.
     results = {}
     for path in files:
-        with open(path, "r", encoding="utf-8") as fh:
-            source = fh.read()
-        findings = scan_source(source)
+        findings = scanner.scan_file(path)
         review = []
         if ai_on:
             findings = ai_layer.explain_findings(findings)   # fill analogies
-            review = ai_layer.heuristic_scan(source, findings)
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                review = ai_layer.heuristic_scan(fh.read(), findings)
         results[path] = {"findings": findings, "review": review}
 
     confirmed_total = sum(len(d["findings"]) for d in results.values())

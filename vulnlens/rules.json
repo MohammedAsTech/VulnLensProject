@@ -46,5 +46,29 @@
     "severity": "MEDIUM",
     "message": "TLS certificate verification is disabled (verify=False).",
     "fix": "Remove verify=False so certificates are validated."
+  },
+  "cpp-buffer-overflow": {
+    "cwe": "CWE-120",
+    "severity": "HIGH",
+    "message": "Unbounded copy (gets/strcpy/strcat/sprintf/scanf) can overflow a buffer.",
+    "fix": "Use bounded versions (fgets, strncpy, snprintf) or std::string."
+  },
+  "cpp-command-injection": {
+    "cwe": "CWE-78",
+    "severity": "HIGH",
+    "message": "system()/popen() runs a shell command; input can inject extra commands.",
+    "fix": "Avoid system(); use exec-family calls with explicit arguments, or validate input."
+  },
+  "cpp-weak-random": {
+    "cwe": "CWE-330",
+    "severity": "MEDIUM",
+    "message": "rand()/random() is predictable; unsafe for security.",
+    "fix": "Use a cryptographically secure RNG (e.g. std::random_device or a platform CSPRNG)."
+  },
+  "cpp-format-string": {
+    "cwe": "CWE-134",
+    "severity": "HIGH",
+    "message": "Non-literal format string can be attacker-controlled.",
+    "fix": "Use a literal format string, e.g. printf(\"%s\", user)."
   }
 }

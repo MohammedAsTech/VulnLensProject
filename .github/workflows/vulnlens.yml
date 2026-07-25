@@ -22,6 +22,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install C++ scanning support
+        run: pip install tree-sitter tree-sitter-cpp
+
       - name: Run VulnLens (SARIF output)
         # The scanner exits non-zero when it finds issues; don't fail the whole
         # job on that, so the SARIF upload still runs and posts the alerts.
