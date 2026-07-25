@@ -70,5 +70,17 @@
     "severity": "HIGH",
     "message": "Non-literal format string can be attacker-controlled.",
     "fix": "Use a literal format string, e.g. printf(\"%s\", user)."
+  },
+  "cpp-hardcoded-secret": {
+    "cwe": "CWE-798",
+    "severity": "MEDIUM",
+    "message": "Hardcoded credential assigned directly in source code.",
+    "fix": "Load secrets from environment variables or a secrets manager; never commit them."
+  },
+  "cpp-weak-hash": {
+    "cwe": "CWE-327",
+    "severity": "MEDIUM",
+    "message": "MD5 and SHA1 are broken hashes, unsafe for passwords or signatures.",
+    "fix": "Use SHA-256 or stronger, or a vetted crypto library (e.g. OpenSSL's EVP_sha256)."
   }
 }
