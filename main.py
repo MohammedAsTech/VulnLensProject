@@ -25,6 +25,9 @@ from vulnlens import repo
 from vulnlens import summary as summary_mod
 
 
+MAX_TIER2_FILES = 25   # cap AI review calls per run (one call per file)
+
+
 def severity_rank(finding: Finding) -> int:
     order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
     return order.get(finding.severity, 3)
@@ -122,11 +125,16 @@ def _run(args, target: str, repo_label: str, summary_on: bool) -> int:
         print("No supported source files (.py, .c/.cpp) found to scan.")
         return 0
 
-    # If C++ files are present but tree-sitter isn't installed, warn once.
-    if (any(scanner.language_of(p) == "cpp" for p in files)
-            and not scanner.cpp_engine.cpp_available()):
-        print("note: C++ files found but tree-sitter isn't installed; skipping C++. "
-              "Install with: pip install tree-sitter tree-sitter-cpp\n", file=sys.stderr)
+    # C++ files without tree-sitter can't be scanned: skip them, and count them as skipped so
+    # a repo of C++ files never looks "clean" when nothing was actually analysed.
+    skipped = []
+    if not scanner.cpp_engine.cpp_available():
+        cpp_files = [p for p in files if scanner.language_of(p) == "cpp"]
+        if cpp_files:
+            print("note: C++ files found but tree-sitter isn't installed; skipping C++. "
+                  "Install with: pip install tree-sitter tree-sitter-cpp\n", file=sys.stderr)
+            skipped += [os.path.relpath(p, target) if repo_label else p for p in cpp_files]
+            files = [p for p in files if p not in cpp_files]
 
     ai_on = args.ai
     if ai_on and not ai_layer.ai_available():
@@ -135,7 +143,7 @@ def _run(args, target: str, repo_label: str, summary_on: bool) -> int:
         ai_on = False
 
     # Scan every file. Store Tier 1 findings and (optionally) Tier 2 review items.
-    results, skipped = {}, []
+    results, tier2_left = {}, MAX_TIER2_FILES
     for path in files:
         shown = os.path.relpath(path, target) if repo_label else path
         try:
@@ -146,11 +154,23 @@ def _run(args, target: str, repo_label: str, summary_on: bool) -> int:
         review = []
         if ai_on:
             findings = ai_layer.explain_findings(findings)   # fill analogies
-            with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                review = ai_layer.heuristic_scan(fh.read(), findings)
+            if tier2_left > 0:
+                tier2_left -= 1
+                lang = "Python" if scanner.language_of(path) == "python" else "C/C++"
+                with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                    review = ai_layer.heuristic_scan(fh.read(), findings, lang)
+            elif tier2_left == 0:
+                tier2_left = -1   # say it once
+                print(f"note: Tier 2 review limited to the first {MAX_TIER2_FILES} files "
+                      "to protect free-tier quota.", file=sys.stderr)
         results[shown] = {"findings": findings, "review": review}
 
     confirmed_total = sum(len(d["findings"]) for d in results.values())
+
+    if skipped:
+        shown_names = ", ".join(skipped[:5]) + (" ..." if len(skipped) > 5 else "")
+        print(f"warning: {len(skipped)} file(s) were NOT analysed (unparseable or unsupported "
+              f"here): {shown_names}", file=sys.stderr)
 
     summ = summary_mod.build_summary(results, skipped, repo_label) if summary_on else None
     narrative = ai_layer.summarize_repo(summ) if (summ and ai_on) else ""
@@ -174,7 +194,8 @@ def _run(args, target: str, repo_label: str, summary_on: bool) -> int:
     review_total = print_needs_review(results, ai_on)
 
     print("\n" + "-" * 70)
-    print(f"  Scanned {len(files)} file(s). "
+    skipped_note = f" {len(skipped)} skipped (not analysed)." if skipped else ""
+    print(f"  Scanned {len(results)} file(s).{skipped_note} "
           f"{confirmed_total} confirmed, {review_total} to review.")
     print("-" * 70)
 

@@ -113,13 +113,16 @@ def _cache_save(cache: dict) -> None:
 # ----------------------------------------------------------------------
 # 1. Analogy layer  (one call per confirmed finding)
 # ----------------------------------------------------------------------
+_analogy_cache: dict[str, str] = {}
+
+
 def explain_findings(findings):
     """Fill finding.analogy for each confirmed finding. Returns findings."""
     client = _get_client()
     if client is None:
         return findings
 
-    by_rule = {}   # an analogy depends only on the rule, so ask once per rule per run
+    by_rule = _analogy_cache   # an analogy depends only on the rule: ask once per rule per run
     for f in findings:
         if f.rule in by_rule:
             f.analogy = by_rule[f.rule]
@@ -142,7 +145,7 @@ def explain_findings(findings):
 # ----------------------------------------------------------------------
 # 2. Tier 2 heuristic pass
 # ----------------------------------------------------------------------
-def heuristic_scan(source: str, confirmed) -> list[ReviewItem]:
+def heuristic_scan(source: str, confirmed, language: str = "Python") -> list[ReviewItem]:
     """Ask the model for suspicious code the rule engine did not catch."""
     client = _get_client()
     if client is None:
@@ -153,22 +156,22 @@ def heuristic_scan(source: str, confirmed) -> list[ReviewItem]:
 
     already = ", ".join(sorted({f.rule for f in confirmed})) or "none"
     # Skip the API for unchanged code: key on file content + flagged rules + model.
-    key = hashlib.sha256(f"{MODEL}|{already}|{source}".encode("utf-8", "replace")).hexdigest()
+    key = hashlib.sha256(f"{MODEL}|{language}|{already}|{source}".encode("utf-8", "replace")).hexdigest()
     cache = _cache_load()
     if key in cache:
         return [ReviewItem(**d) for d in cache[key]]
     prompt = (
-        "You are a Python security reviewer. Below is Python source code. A "
+        f"You are a {language} security reviewer. Below is {language} source code. A "
         "deterministic rule engine already flagged these rule types: "
         f"{already}.\n\n"
         "Point out up to 5 OTHER potentially risky patterns it may have missed "
         "(e.g. SQL string building, unvalidated input, unsafe file paths, weak "
-        "crypto). Do NOT repeat the already-flagged rule types. If nothing else "
+        "crypto, memory safety). Do NOT repeat the already-flagged rule types. If nothing else "
         "looks risky, return an empty array.\n\n"
         "Respond ONLY with a JSON array of objects, each with keys "
         '"line" (int), "issue" (short label), "why" (one sentence). '
         "No prose or markdown outside the JSON.\n\n"
-        f"```python\n{source}\n```"
+        f"```\n{source}\n```"
     )
     try:
         text = _generate(client, prompt, max_tokens=600)

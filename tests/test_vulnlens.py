@@ -301,6 +301,7 @@ import time  # noqa: E402
 @pytest.fixture(autouse=True)
 def _isolated_ai_state(monkeypatch, tmp_path):
     monkeypatch.setattr(ai_layer, "CACHE_PATH", str(tmp_path / "cache.json"))
+    ai_layer._analogy_cache.clear()
 
 
 class _RateLimited(Exception):
@@ -429,3 +430,77 @@ def f(x):
 ])
 def test_yaml_with_safe_loader_not_flagged(code):
     assert engine.scan_source(code) == []
+
+
+# ---- regression tests for bugs found while testing on real repos ----------
+from vulnlens import formats  # noqa: E402
+
+
+@pytest.mark.parametrize("path,expected", [
+    (".github/scripts/x.py", ".github/scripts/x.py"),   # leading dot must survive
+    ("./a.py", "a.py"),
+    ("../x.py", "../x.py"),
+    (r"src\a.py", "src/a.py"),
+    ("src/a.py", "src/a.py"),
+])
+def test_sarif_uri_keeps_leading_dots(path, expected):
+    assert formats._uri(path) == expected
+
+
+def test_nested_call_reported_once(tmp_path):
+    f = tmp_path / "x.py"
+    f.write_text("def f(s):\n    exec(compile(s, 'f', 'exec'))\n")
+    found = scanner.scan_file(str(f))
+    assert [(x.rule, x.line, x.tainted) for x in found] == [("dangerous-eval", 2, True)]
+
+
+def test_unparseable_file_is_reported_not_silently_clean(tmp_path, capsys):
+    (tmp_path / "bad.py").write_text("print 'py2'\n")
+    code, out, err = run_cli(capsys, str(tmp_path / "bad.py"))
+    assert code == 0
+    assert "NOT analysed" in err and "bad.py" in err
+    assert "1 skipped" in out
+
+
+def test_cpp_without_tree_sitter_counts_as_skipped(monkeypatch, capsys):
+    monkeypatch.setattr(scanner.cpp_engine, "_CPP_LANGUAGE", None)
+    code, out, err = run_cli(capsys, CPP_DIR, "--summary")
+    assert "NOT analysed" in err
+    assert "Scanned 0 file(s). 5 skipped" in out
+
+
+def test_tier2_is_capped_per_run(monkeypatch, tmp_path, capsys):
+    client, calls = _flaky_client(0, reply="[]")
+    monkeypatch.setattr(ai_layer, "_get_client", lambda: client)
+    monkeypatch.setattr(cli, "MAX_TIER2_FILES", 3)
+    for i in range(6):
+        (tmp_path / f"f{i}.py").write_text(f"x = {i}\n")
+    _, _, err = run_cli(capsys, str(tmp_path), "--ai")
+    assert calls["n"] == 3                        # no findings -> no analogies; 3 files reviewed
+    assert "limited to the first 3 files" in err
+
+
+def test_tier2_prompt_names_the_language(monkeypatch):
+    seen = []
+
+    class Completions:
+        @staticmethod
+        def create(**kw):
+            seen.append(kw["messages"][0]["content"])
+            msg = type("M", (), {"content": "[]"})
+            return type("R", (), {"choices": [type("C", (), {"message": msg})]})
+
+    client = type("Cl", (), {"chat": type("Ch", (), {"completions": Completions})})()
+    monkeypatch.setattr(ai_layer, "_get_client", lambda: client)
+    ai_layer.heuristic_scan("int main(){}", [], "C/C++")
+    assert "C/C++ security reviewer" in seen[0] and "Python" not in seen[0]
+
+
+def test_analogy_cache_spans_files(monkeypatch):
+    client, calls = _flaky_client(0, reply="like a door")
+    monkeypatch.setattr(ai_layer, "_get_client", lambda: client)
+    a = scanner.scan_file(os.path.join(PY_DIR, "eval_sample.py"))
+    b = scanner.scan_file(os.path.join(PY_DIR, "taint_sample.py"))
+    ai_layer.explain_findings(a)
+    ai_layer.explain_findings(b)
+    assert calls["n"] == 2                        # eval once, shell once, across both files

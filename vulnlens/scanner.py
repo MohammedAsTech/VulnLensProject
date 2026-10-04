@@ -34,9 +34,18 @@ def scan_file(path: str):
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         source = f.read()
     lang = language_of(path)
-    if lang == "cpp":
-        return cpp_engine.scan_source(source)
-    return engine.scan_source(source)
+    found = cpp_engine.scan_source(source) if lang == "cpp" else engine.scan_source(source)
+    return _dedupe(found)
+
+
+def _dedupe(findings):
+    """One finding per (rule, line): nested calls like exec(compile(...)) hit the same rule twice."""
+    best = {}
+    for f in findings:
+        key = (f.rule, f.line)
+        if key not in best or (f.tainted and not best[key].tainted):
+            best[key] = f
+    return sorted(best.values(), key=lambda f: f.line)
 
 
 def collect_files(target: str) -> list[str]:

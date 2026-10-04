@@ -11,7 +11,7 @@ I built it to learn how SAST tools actually work: parsing code into syntax trees
 - **Tier 1, deterministic:** 14 rules mapped to CWEs. Python is parsed with the standard-library `ast`, C/C++ with [tree-sitter](https://tree-sitter.github.io/). Intraprocedural taint tracking flags findings where untrusted input actually reaches a dangerous call.
 - **Tier 2, optional AI (Groq):** suggests suspicious code the rules missed. It is always kept separate from confirmed findings and never affects the exit code.
 - **Repo summaries:** give it a GitHub URL and it clones, scans and prints a risk summary.
-- **CI-ready:** text, JSON and [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html) output. A GitHub Actions workflow uploads SARIF to code scanning, and 58 pytest tests run on every push.
+- **CI-ready:** text, JSON and [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html) output. A GitHub Actions workflow uploads SARIF to code scanning, and 69 pytest tests run on every push.
 
 ## Quick start
 
@@ -43,7 +43,7 @@ python main.py <file | folder | github-url> [--ai] [--summary] [--format text|js
 
 **GitHub repos:** a `https://github.com/<owner>/<repo>` URL is shallow-cloned to a temp directory (nothing in it is executed), scanned, summarised, and deleted. Unparseable files, such as Python 2 code, are skipped and counted instead of aborting the scan. Requires `git` on your PATH.
 
-**AI setup:** set `GROQ_API_KEY` (PowerShell: `$env:GROQ_API_KEY="..."`). The default model is `openai/gpt-oss-120b`; override it with `VULNLENS_MODEL` since Groq retires models over time. Without a key, VulnLens runs Tier 1 only. To stay within free-tier limits it retries 429 responses with backoff, asks for one analogy per rule, caches Tier 2 results by file hash, and skips files over 40k characters.
+**AI setup:** set `GROQ_API_KEY` (PowerShell: `$env:GROQ_API_KEY="..."`). The default model is `openai/gpt-oss-120b`; override it with `VULNLENS_MODEL` since Groq retires models over time. Without a key, VulnLens runs Tier 1 only. To stay within free-tier limits it retries 429 responses with backoff, asks for one analogy per rule, caches Tier 2 results by file hash, skips files over 40k characters, and reviews at most 25 files per run.
 
 **Exit codes:** `0` nothing found (or no supported files), `1` at least one confirmed finding, `2` path not found.
 
@@ -100,7 +100,7 @@ Both language engines return the same `Finding` objects, so reporting, JSON, SAR
 
 ## Testing
 
-`tests/test_vulnlens.py` (58 tests) pins the exact rule, line and taint flag for every sample file, checks that safe counterparts (`ast.literal_eval`, `strncpy`, `printf("%s", x)`) are not flagged, validates JSON and SARIF structure, covers CLI exit codes, and tests the failure paths: no API key, missing tree-sitter, rate limits, bad repo URLs. AI calls are tested against a fake client, so the suite needs no network or key.
+`tests/test_vulnlens.py` (69 tests) pins the exact rule, line and taint flag for every sample file, checks that safe counterparts (`ast.literal_eval`, `strncpy`, `printf("%s", x)`) are not flagged, validates JSON and SARIF structure, covers CLI exit codes, and tests the failure paths: no API key, missing tree-sitter, rate limits, bad repo URLs. AI calls are tested against a fake client, so the suite needs no network or key.
 
 ## Project layout
 

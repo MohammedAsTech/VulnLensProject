@@ -24,8 +24,12 @@ def _cwe_url(cwe: str) -> str:
 
 
 def _uri(path: str) -> str:
-    # SARIF wants forward-slash relative paths.
-    return path.replace("\\", "/").lstrip("./")
+    # SARIF wants forward-slash relative paths. Drop only a leading "./" (not the dots of
+    # ".github/..." or "..").
+    path = path.replace("\\", "/")
+    while path.startswith("./"):
+        path = path[2:]
+    return path.lstrip("/")
 
 
 def to_json(results: dict) -> str:
