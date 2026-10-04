@@ -2,21 +2,50 @@
 
 [![VulnLens Security Scan](https://github.com/MohammedAsTech/VulnLensProject/actions/workflows/vulnlens.yml/badge.svg)](https://github.com/MohammedAsTech/VulnLensProject/actions/workflows/vulnlens.yml) ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
-A two-tier static-analysis security scanner for Python and C/C++.
+A static-analysis security scanner for Python and C/C++ that tells confirmed vulnerabilities apart from AI guesses.
 
-- **Tier 1** is a deterministic rule engine. Python is analysed with the standard-library `ast` module and C/C++ with [tree-sitter](https://tree-sitter.github.io/). It includes intraprocedural taint tracking, so findings where untrusted input actually reaches a dangerous call are flagged and prioritised.
-- **Tier 2** is an optional LLM heuristic pass (Groq). It suggests suspicious code the rules missed, and it is **always kept separate** from confirmed findings.
+I built it to learn how SAST tools actually work: parsing code into syntax trees, tracking untrusted data to dangerous calls, and emitting results CI systems understand. It is a learning project with a small rule set, not a replacement for Bandit, Semgrep or CodeQL (see [Known limitations](#known-limitations)).
 
-Output formats: human-readable text, JSON, and [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html). A GitHub Actions workflow uploads the SARIF to GitHub code scanning so findings show up in the Security tab.
+**What it does**
 
-## Features
+- **Tier 1, deterministic:** 14 rules mapped to CWEs. Python is parsed with the standard-library `ast`, C/C++ with [tree-sitter](https://tree-sitter.github.io/). Intraprocedural taint tracking flags findings where untrusted input actually reaches a dangerous call.
+- **Tier 2, optional AI (Groq):** suggests suspicious code the rules missed. It is always kept separate from confirmed findings and never affects the exit code.
+- **Repo summaries:** give it a GitHub URL and it clones, scans and prints a risk summary.
+- **CI-ready:** text, JSON and [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html) output. A GitHub Actions workflow uploads SARIF to code scanning, and 50 pytest tests run on every push.
 
-- 8 Python rules and 6 C/C++ rules, each mapped to a CWE and a severity (see [`vulnlens/rules.json`](vulnlens/rules.json)).
-- Import-alias resolution: `import os as o; o.system(...)` and `from os import system` are detected the same as `os.system(...)`.
-- Intraprocedural taint analysis: `TAINTED FLOW` marks findings where a function parameter or `input()` value reaches a sink.
-- Language dispatch layer: both engines return the same `Finding` objects, so reporting, JSON, SARIF and CI are shared.
-- Graceful degradation: no Groq key means Tier 1 only, and no tree-sitter means C/C++ files are skipped with a warning.
-- Exit codes suitable for CI (see below).
+## Quick start
+
+Requires Python 3.10+. The Python scanner needs no dependencies.
+
+```bash
+git clone https://github.com/MohammedAsTech/VulnLensProject.git
+cd VulnLensProject
+python main.py tests/vulnerable_samples/            # scan a folder
+python main.py https://github.com/owner/repo        # security summary of a GitHub repo
+python -m pip install pytest && python -m pytest    # run the tests
+```
+
+Optional extras: `pip install tree-sitter tree-sitter-cpp` for C/C++, `pip install groq` for `--ai` (or `pip install -r requirements.txt` for both).
+
+## Usage
+
+```bash
+python main.py <file | folder | github-url> [--ai] [--summary] [--format text|json|sarif]
+```
+
+| Command | Result |
+|---|---|
+| `python main.py src/` | Text report |
+| `python main.py src/ --format json > report.json` | Structured JSON, nothing else printed |
+| `python main.py . --format sarif > vulnlens.sarif` | SARIF for GitHub code scanning |
+| `python main.py src/ --summary` | Adds a repo-level risk summary |
+| `python main.py src/ --ai` | Adds analogies to findings and a separate *needs review* section |
+
+**GitHub repos:** a `https://github.com/<owner>/<repo>` URL is shallow-cloned to a temp directory (nothing in it is executed), scanned, summarised, and deleted. Unparseable files, such as Python 2 code, are skipped and counted instead of aborting the scan. Requires `git` on your PATH.
+
+**AI setup:** set `GROQ_API_KEY` (PowerShell: `$env:GROQ_API_KEY="..."`). The default model is `openai/gpt-oss-120b`; override it with `VULNLENS_MODEL` since Groq retires models over time. Without a key, VulnLens runs Tier 1 only. To stay within free-tier limits it retries 429 responses with backoff, asks for one analogy per rule, caches Tier 2 results by file hash, and skips files over 40k characters.
+
+**Exit codes:** `0` nothing found (or no supported files), `1` at least one confirmed finding, `2` path not found.
 
 ### Rules
 
@@ -25,84 +54,12 @@ Output formats: human-readable text, JSON, and [SARIF 2.1.0](https://docs.oasis-
 | Python | `dangerous-eval` (CWE-95), `shell-injection` (CWE-78), `unsafe-deserialization` (CWE-502), `weak-random` (CWE-330), `hardcoded-secret` (CWE-798), `weak-hash` (CWE-327), `unsafe-yaml-load` (CWE-502), `insecure-request` (CWE-295) |
 | C/C++ | `cpp-buffer-overflow` (CWE-120), `cpp-command-injection` (CWE-78), `cpp-weak-random` (CWE-330), `cpp-format-string` (CWE-134), `cpp-hardcoded-secret` (CWE-798), `cpp-weak-hash` (CWE-327) |
 
-## Install
-
-Requires Python 3.10+. The core Python scanner uses only the standard library.
-
-```bash
-git clone https://github.com/MohammedAsTech/VulnLensProject.git
-cd VulnLensProject
-```
-
-Optional extras:
-
-```bash
-pip install tree-sitter tree-sitter-cpp   # C/C++ scanning
-pip install groq                          # Tier 2 AI layer (--ai)
-# or everything at once:
-pip install -r requirements.txt
-```
-
-## Usage
-
-```bash
-python main.py <file-or-folder> [--ai] [--format text|json|sarif]
-```
-
-**Text report (default)**
-
-```bash
-python main.py tests/vulnerable_samples/
-```
-
-**JSON**: only structured output is printed, so it can be piped to a file or another tool.
-
-```bash
-python main.py src/ --format json > report.json
-```
-
-**SARIF 2.1.0**: for GitHub code scanning or any SARIF viewer.
-
-```bash
-python main.py . --format sarif > vulnlens.sarif
-```
-
-**Tier 2 AI pass**: adds plain-English analogies to confirmed findings and a separate *needs review* section.
-
-```bash
-export GROQ_API_KEY=your_key_here     # PowerShell: $env:GROQ_API_KEY="your_key_here"
-python main.py src/ --ai
-```
-
-**Security summary of a GitHub repo**: pass a `https://github.com/<owner>/<repo>` URL. VulnLens shallow-clones it to a temp directory (nothing in it is executed), scans every Python and C/C++ file, prints a summary, then deletes the clone. `--summary` gives the same summary for a local path.
-
-```bash
-python main.py https://github.com/owner/repo
-python main.py https://github.com/owner/repo --ai --format json   # summary + AI narrative in JSON
-```
-
-The summary is computed deterministically: overall risk rating, files and languages scanned, findings by severity and rule, how many are taint-confirmed, and the riskiest files. With `--ai`, a short plain-English narrative is added. It only describes those numbers and never adds findings. Files that can't be parsed (for example Python 2 code) are skipped and counted instead of aborting the scan. Requires `git` on your PATH.
-
-**AI model and free-tier safeguards**: the default model is `openai/gpt-oss-120b`. Groq retires models from time to time, so override it with `VULNLENS_MODEL` (list what your key can use with `client.models.list()`). To stay inside free-tier limits, VulnLens retries HTTP 429 rate-limit responses with exponential backoff, asks for one analogy per rule rather than per finding, caches Tier 2 results by file hash (`~/.vulnlens_ai_cache.json`) so unchanged files cost nothing on re-runs, and skips files over 40k characters. Billing only starts if you add a payment method in the Groq Console.
-
-### Exit codes
-
-| Code | Meaning |
-|---|---|
-| `0` | Nothing found, or no supported files in the target |
-| `1` | At least one confirmed (Tier 1) finding |
-| `2` | Target path does not exist |
-
-Tier 2 suggestions never affect the exit code.
+Import aliases are resolved, so `import os as o; o.system(...)` and `from os import system` are caught like `os.system(...)`.
 
 ## Sample output
 
 ```text
 $ python main.py tests/vulnerable_samples/taint_sample.py
-======================================================================
-  CONFIRMED FINDINGS  (Tier 1 - deterministic rule engine)
-======================================================================
-
 tests/vulnerable_samples/taint_sample.py
   [HIGH  ] line 12   dangerous-eval  (CWE-95)  !! TAINTED FLOW
            eval()/exec() executes arbitrary code from its input.
@@ -111,87 +68,39 @@ tests/vulnerable_samples/taint_sample.py
   [HIGH  ] line 17   dangerous-eval  (CWE-95)
            eval()/exec() executes arbitrary code from its input.
            fix: Avoid eval/exec on untrusted input; use ast.literal_eval or explicit parsing.
-  [HIGH  ] line 23   shell-injection  (CWE-78)  !! TAINTED FLOW
-           A shell command built from input can be hijacked to run extra commands.
-           >> untrusted input reaches this call (data-flow confirmed)
-           fix: Use subprocess.run with an argument list; avoid os.system and shell=True.
-  [HIGH  ] line 28   shell-injection  (CWE-78)
-           A shell command built from input can be hijacked to run extra commands.
-           fix: Use subprocess.run with an argument list; avoid os.system and shell=True.
-
-======================================================================
-  NEEDS REVIEW  (Tier 2 - AI heuristic pass, unconfirmed)
-======================================================================
-
-  Tier 2 disabled. Re-run with --ai to enable.
-
-----------------------------------------------------------------------
+  ...
   Scanned 1 file(s). 4 confirmed, 0 to review.
-----------------------------------------------------------------------
 ```
 
-Lines 12 and 23 carry the `TAINTED FLOW` tag because a function parameter flows into the sink. Lines 17 and 28 are the same dangerous calls fed only constants: still worth a look, but lower priority.
+Line 12 is tagged `TAINTED FLOW` because a function parameter flows into `eval`. Line 17 is the same dangerous call fed only a constant: still worth a look, but lower priority.
 
-JSON output:
-
-```json
-{
-  "tool": "VulnLens",
-  "confirmed": [
-    {
-      "file": "tests/vulnerable_samples/shell_sample.py",
-      "line": 8,
-      "rule": "shell-injection",
-      "cwe": "CWE-78",
-      "severity": "HIGH",
-      "tainted": true,
-      "message": "A shell command built from input can be hijacked to run extra commands.",
-      "fix": "Use subprocess.run with an argument list; avoid os.system and shell=True."
-    }
-  ],
-  "needs_review": []
-}
-```
-
-## Demo: summarising a GitHub repo
-
-Real output from `python main.py https://github.com/MohammedAsTech/VulnLensProject` (VulnLens scanning its own repo; the findings come from the deliberately vulnerable files under `tests/`):
+Repo summary, from `python main.py https://github.com/MohammedAsTech/VulnLensProject` (VulnLens scanning itself; the findings come from the deliberately vulnerable files under `tests/`):
 
 ```text
-======================================================================
   SECURITY SUMMARY  -  MohammedAsTech/VulnLensProject
-======================================================================
   Overall risk : HIGH
   Files scanned: 27  (22 python, 5 cpp)
   Findings     : 28  (HIGH 19, MEDIUM 9, LOW 0)
   Taint-confirmed (untrusted input reaches a sink): 20
-
-  By rule:
-      6  shell-injection (CWE-78)
-      5  cpp-command-injection (CWE-78)
-      3  dangerous-eval (CWE-95)
-      ...
-
   Riskiest files:
     tests/cpp_samples/vuln_sample.cpp  (score 32)
     tests/vulnerable_samples/aliased_sample.py  (score 30)
-    tests/vulnerable_samples/taint_sample.py  (score 30)
 ```
-
-The test suite (`pytest`, 50 tests) pins the exact rule, line and taint flag for every sample file, so a regression in any rule or in the taint tracker fails CI.
-
-## GitHub Actions / code scanning
-
-[`.github/workflows/vulnlens.yml`](.github/workflows/vulnlens.yml) scans the repository on every push and pull request to `main`, writes SARIF, and uploads it with `github/codeql-action/upload-sarif`. The scan step uses `continue-on-error` because the scanner exits `1` when it finds something, and the upload must still run.
 
 ## Design: confirmed vs. needs review
 
-Static analysers lose trust when deterministic results and guesses are mixed in one list. VulnLens keeps them apart on purpose:
+Static analysers lose trust when deterministic results and guesses share one list. VulnLens keeps them apart:
 
-- **Confirmed (Tier 1)**: every finding fires on a specific AST pattern, so the same input always produces the same output. These are safe to gate CI on, and they alone drive the exit code and the JSON/SARIF `confirmed` results.
-- **Needs review (Tier 2)**: an LLM is good at spotting patterns a rule set does not cover (SQL string building, unsafe file paths) but is non-deterministic and can hallucinate. Its output is labelled *unconfirmed*, uses a different type (`ReviewItem`, not `Finding`), is never counted in the exit code, and is only shown when the user asks for it with `--ai`.
-- **The AI never changes detection.** The analogy layer only fills in an explanatory sentence on findings the rules already confirmed.
-- **The provider is isolated.** Only `vulnlens/ai_layer.py` knows about Groq; swapping providers touches nothing else.
+- **Confirmed (Tier 1):** every finding fires on a specific syntax-tree pattern, so the same input always gives the same output. Only these drive CI, the exit code, and the `confirmed` results in JSON/SARIF.
+- **Needs review (Tier 2):** an LLM can spot things rules don't cover (SQL string building, unsafe paths) but is non-deterministic and can hallucinate. Its output uses a different type (`ReviewItem`, not `Finding`), is labelled unconfirmed, and only appears with `--ai`.
+- **The AI never changes detection.** It only adds an explanation to findings the rules already confirmed.
+- **The provider is isolated.** Only `vulnlens/ai_layer.py` knows about Groq.
+
+Both language engines return the same `Finding` objects, so reporting, JSON, SARIF and CI are shared and adding a language means adding an engine.
+
+## Testing
+
+`tests/test_vulnlens.py` (50 tests) pins the exact rule, line and taint flag for every sample file, checks that safe counterparts (`ast.literal_eval`, `strncpy`, `printf("%s", x)`) are not flagged, validates JSON and SARIF structure, covers CLI exit codes, and tests the failure paths: no API key, missing tree-sitter, rate limits, bad repo URLs. AI calls are tested against a fake client, so the suite needs no network or key.
 
 ## Project layout
 
@@ -202,23 +111,25 @@ vulnlens/
   engine.py              Python AST rule engine + taint tracking
   cpp_engine.py          C/C++ tree-sitter engine
   rules.json             rule metadata (CWE, severity, message, fix)
-  formats.py             JSON and SARIF serialisation
-  ai_layer.py            Tier 2 (Groq): analogies + heuristic review
-tests/
-  vulnerable_samples/    Python samples
-  cpp_samples/           C/C++ samples
+  formats.py             JSON and SARIF output
+  repo.py, summary.py    GitHub clone + repo-level summary
+  ai_layer.py            Tier 2 (Groq): analogies, review, narrative
+tests/                   pytest suite + vulnerable_samples/ and cpp_samples/
 ```
-
-Detection logic lives in the engines, and rule metadata lives in `rules.json`.
 
 ## Known limitations
 
-VulnLens is a pattern-based scanner, not a full program analyser. Known gaps:
+- **Small, unbenchmarked rule set.** 14 rules, tested on hand-written samples. I haven't measured false-positive or false-negative rates on real-world code.
+- **Indirect calls are missed.** Calls are matched by name, so `fn = getattr(os, "system"); fn(cmd)` gives no finding.
+- **Taint is intraprocedural only.** It does not cross function boundaries. A nested function that uses its outer function's tainted variable is still flagged, but loses the `TAINTED FLOW` tag.
+- **Secret detection is name-based.** A variable named `token`, `password`, `api_key` and similar assigned a string literal is flagged. There is no entropy or key-format check, so it can false-positive (`token = "Bearer"`) and miss secrets under other names.
+- **Tier 2 is heuristic.** AI suggestions may be wrong, which is why they are kept out of the confirmed results.
 
-- **Indirect calls are missed.** Calls are matched by name, so `fn = getattr(os, "system"); fn(cmd)` produces no finding.
-- **Taint is intraprocedural only.** Taint does not cross function boundaries. A nested function that uses its outer function's tainted variable is still flagged, but it loses the `TAINTED FLOW` tag.
-- **Secret detection is name-based.** The `hardcoded-secret` rule fires when a variable named like `token`, `password`, `secret`, `api_key` and similar is assigned a string literal. It does not measure entropy or match key formats, so it can false-positive (for example `token = "Bearer"`) and can miss secrets stored under other names.
-- **Tier 2 is heuristic.** LLM suggestions may be wrong or incomplete, which is why they are kept out of the confirmed results.
+## What I'd build next
+
+1. Interprocedural taint (follow data through function calls).
+2. Measure precision and recall against a known-vulnerable benchmark and compare with Bandit.
+3. More rules, starting with SQL injection, plus `pip`-installable packaging.
 
 ## License
 
