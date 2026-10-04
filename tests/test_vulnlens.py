@@ -373,3 +373,59 @@ def test_analogy_requested_once_per_rule(monkeypatch):
     ai_layer.explain_findings(findings)
     assert calls["n"] == 2
     assert all(f.analogy == "like a door" for f in findings)
+
+
+# ---- extra Python patterns (popen, pickle.load, yaml safe loaders) --------
+from vulnlens import engine  # noqa: E402
+
+
+@pytest.mark.parametrize("code,rule", [
+    ("""
+import os
+def f(x):
+    os.popen(x)
+""", "shell-injection"),
+    ("""
+import os as o
+def f(x):
+    o.popen(x)
+""", "shell-injection"),
+    ("""
+import pickle
+def f(p):
+    pickle.load(open(p, 'rb'))
+""", "unsafe-deserialization"),
+    ("""
+import yaml
+def f(x):
+    yaml.load(x)
+""", "unsafe-yaml-load"),
+    ("""
+import yaml
+def f(x):
+    yaml.load(x, Loader=yaml.FullLoader)
+""", "unsafe-yaml-load"),
+])
+def test_extra_python_patterns_flagged(code, rule):
+    assert [f.rule for f in engine.scan_source(code)] == [rule]
+
+
+@pytest.mark.parametrize("code", [
+    """
+import yaml
+def f(x):
+    yaml.load(x, Loader=yaml.SafeLoader)
+""",
+    """
+import yaml
+def f(x):
+    yaml.load(x, yaml.CSafeLoader)
+""",
+    """
+from yaml import SafeLoader, load
+def f(x):
+    load(x, Loader=SafeLoader)
+""",
+])
+def test_yaml_with_safe_loader_not_flagged(code):
+    assert engine.scan_source(code) == []

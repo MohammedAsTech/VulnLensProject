@@ -134,6 +134,16 @@ class RuleEngine(ast.NodeVisitor):
                 return kw.value.value
         return None
 
+    @staticmethod
+    def _yaml_loader_is_safe(node) -> bool:
+        """True if yaml.load is given an explicit safe loader (kwarg or 2nd arg)."""
+        loader = next((kw.value for kw in node.keywords if kw.arg == "Loader"), None)
+        if loader is None and len(node.args) > 1:
+            loader = node.args[1]
+        name = (loader.attr if isinstance(loader, ast.Attribute)
+                else loader.id if isinstance(loader, ast.Name) else "")
+        return name in {"SafeLoader", "CSafeLoader"}
+
     # ------------------------------------------------------------------
     # RULES ON FUNCTION CALLS
     # ------------------------------------------------------------------
@@ -144,13 +154,13 @@ class RuleEngine(ast.NodeVisitor):
         if func in {"eval", "exec", "compile"} and module in (None, "builtins"):
             self._flag("dangerous-eval", node, tainted)
 
-        if module == "os" and func == "system":
+        if module == "os" and func in {"system", "popen"}:
             self._flag("shell-injection", node, tainted)
 
         if module == "subprocess" and self._kwarg_const(node, "shell") is True:
             self._flag("shell-injection", node, tainted)
 
-        if module == "pickle" and func == "loads":
+        if module == "pickle" and func in {"load", "loads"}:
             self._flag("unsafe-deserialization", node, tainted)
 
         if module == "random":
@@ -159,7 +169,7 @@ class RuleEngine(ast.NodeVisitor):
         if module == "hashlib" and func in {"md5", "sha1"}:
             self._flag("weak-hash", node, tainted)
 
-        if module == "yaml" and func == "load":
+        if module == "yaml" and func == "load" and not self._yaml_loader_is_safe(node):
             self._flag("unsafe-yaml-load", node, tainted)
 
         if module == "requests" and self._kwarg_const(node, "verify") is False:

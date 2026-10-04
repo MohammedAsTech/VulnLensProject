@@ -14,7 +14,7 @@
   "unsafe-deserialization": {
     "cwe": "CWE-502",
     "severity": "HIGH",
-    "message": "pickle.loads on untrusted data can execute arbitrary code.",
+    "message": "pickle.load/loads on untrusted data can execute arbitrary code.",
     "fix": "Don't unpickle untrusted data; use JSON or another safe format."
   },
   "weak-random": {
