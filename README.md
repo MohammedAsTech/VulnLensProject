@@ -1,5 +1,7 @@
 # VulnLens
 
+[![VulnLens Security Scan](https://github.com/MohammedAsTech/VulnLensProject/actions/workflows/vulnlens.yml/badge.svg)](https://github.com/MohammedAsTech/VulnLensProject/actions/workflows/vulnlens.yml) ![License: MIT](https://img.shields.io/badge/license-MIT-green)
+
 A two-tier static-analysis security scanner for Python and C/C++.
 
 - **Tier 1** is a deterministic rule engine. Python is analysed with the standard-library `ast` module and C/C++ with [tree-sitter](https://tree-sitter.github.io/). It includes intraprocedural taint tracking, so findings where untrusted input actually reaches a dangerous call are flagged and prioritised.
@@ -150,6 +152,33 @@ JSON output:
   "needs_review": []
 }
 ```
+
+## Demo: summarising a GitHub repo
+
+Real output from `python main.py https://github.com/MohammedAsTech/VulnLensProject` (VulnLens scanning its own repo; the findings come from the deliberately vulnerable files under `tests/`):
+
+```text
+======================================================================
+  SECURITY SUMMARY  -  MohammedAsTech/VulnLensProject
+======================================================================
+  Overall risk : HIGH
+  Files scanned: 27  (22 python, 5 cpp)
+  Findings     : 28  (HIGH 19, MEDIUM 9, LOW 0)
+  Taint-confirmed (untrusted input reaches a sink): 20
+
+  By rule:
+      6  shell-injection (CWE-78)
+      5  cpp-command-injection (CWE-78)
+      3  dangerous-eval (CWE-95)
+      ...
+
+  Riskiest files:
+    tests/cpp_samples/vuln_sample.cpp  (score 32)
+    tests/vulnerable_samples/aliased_sample.py  (score 30)
+    tests/vulnerable_samples/taint_sample.py  (score 30)
+```
+
+The test suite (`pytest`, 50 tests) pins the exact rule, line and taint flag for every sample file, so a regression in any rule or in the taint tracker fails CI.
 
 ## GitHub Actions / code scanning
 
