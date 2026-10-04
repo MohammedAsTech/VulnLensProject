@@ -193,4 +193,4 @@ VulnLens is a pattern-based scanner, not a full program analyser. Known gaps:
 
 ## License
 
-MIT. See [LICENSE](LICENSE) (to be added).
+MIT. See [LICENSE](LICENSE).
