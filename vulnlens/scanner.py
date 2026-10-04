@@ -17,6 +17,7 @@ from vulnlens import engine, cpp_engine
 PY_EXT = {".py"}
 CPP_EXT = {".c", ".cc", ".cpp", ".cxx", ".c++", ".h", ".hpp", ".hh", ".hxx"}
 SUPPORTED = PY_EXT | CPP_EXT
+SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__"}
 
 
 def language_of(path: str) -> str:
@@ -43,7 +44,8 @@ def collect_files(target: str) -> list[str]:
     if os.path.isfile(target):
         return [target] if language_of(target) != "unknown" else []
     files = []
-    for root, _dirs, names in os.walk(target):
+    for root, dirs, names in os.walk(target):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
         for name in names:
             if language_of(name) != "unknown":
                 files.append(os.path.join(root, name))

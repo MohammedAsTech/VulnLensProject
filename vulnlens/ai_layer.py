@@ -23,16 +23,34 @@ Note: only THIS module knows which AI provider is used. Swapping providers
 (Groq / Gemini / Claude / a local model) touches nothing else in the codebase.
 """
 from dataclasses import dataclass
+import hashlib
 import json
 import os
+import sys
+import time
 
 try:
     from groq import Groq
+    from groq import RateLimitError
 except ImportError:
     Groq = None
+    RateLimitError = None
 
-# Groq's free-tier Llama model. Change here if the model name updates.
-MODEL = "llama-3.3-70b-versatile"
+# Free-tier safety: over-limit calls come back as HTTP 429 (not a charge), so retry
+# those with exponential backoff and give up gracefully. (Billing only happens if a
+# payment method is added in the Groq Console.)
+MAX_RETRIES = 4
+MAX_SOURCE_CHARS = 40_000          # don't send huge files to the model
+CACHE_PATH = os.path.join(os.path.expanduser("~"), ".vulnlens_ai_cache.json")
+
+# Groq retires models over time. Override without editing code via VULNLENS_MODEL.
+MODEL = os.environ.get("VULNLENS_MODEL", "openai/gpt-oss-120b")
+
+
+def _warn(what: str, err: Exception) -> None:
+    """One-line stderr note so a failing AI call isn't completely silent."""
+    print(f"warning: AI {what} failed ({type(err).__name__}: {str(err)[:120]})",
+          file=sys.stderr)
 
 
 @dataclass
@@ -58,14 +76,38 @@ def ai_available() -> bool:
 
 
 def _generate(client, prompt: str, max_tokens: int) -> str:
-    """One text-in / text-out chat call to Groq."""
-    resp = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=max_tokens,
-        temperature=0.2,
-    )
-    return (resp.choices[0].message.content or "").strip()
+    """One text-in / text-out chat call to Groq, retrying on 429 rate limits."""
+    extra = {"reasoning_effort": "low"} if "gpt-oss" in MODEL else {}
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            resp = client.chat.completions.create(
+                model=MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_tokens + (1000 if extra else 0),  # headroom for reasoning tokens
+                temperature=0.2,
+                **extra,
+            )
+            return (resp.choices[0].message.content or "").strip()
+        except Exception as e:
+            if RateLimitError is None or not isinstance(e, RateLimitError) or attempt == MAX_RETRIES:
+                raise
+            time.sleep(2 ** attempt)   # 1s, 2s, 4s, 8s
+
+
+def _cache_load() -> dict:
+    try:
+        with open(CACHE_PATH, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def _cache_save(cache: dict) -> None:
+    try:
+        with open(CACHE_PATH, "w", encoding="utf-8") as fh:
+            json.dump(cache, fh)
+    except OSError:
+        pass   # caching is an optimisation only
 
 
 # ----------------------------------------------------------------------
@@ -77,7 +119,11 @@ def explain_findings(findings):
     if client is None:
         return findings
 
+    by_rule = {}   # an analogy depends only on the rule, so ask once per rule per run
     for f in findings:
+        if f.rule in by_rule:
+            f.analogy = by_rule[f.rule]
+            continue
         prompt = (
             "You are explaining a code security issue to someone who does not "
             "code. In ONE short sentence, give a concrete real-world analogy for "
@@ -85,9 +131,11 @@ def explain_findings(findings):
             f"Issue: {f.rule} ({f.cwe}). {f.message}"
         )
         try:
-            f.analogy = _generate(client, prompt, max_tokens=80)
-        except Exception:
-            f.analogy = ""  # stay silent on failure; Tier 1 output is unaffected
+            f.analogy = by_rule[f.rule] = _generate(client, prompt, max_tokens=80)
+        except Exception as e:
+            f.analogy = ""  # Tier 1 output is unaffected; just note the failure
+            _warn("analogy", e)
+            break
     return findings
 
 
@@ -100,7 +148,15 @@ def heuristic_scan(source: str, confirmed) -> list[ReviewItem]:
     if client is None:
         return []
 
+    if len(source) > MAX_SOURCE_CHARS:
+        return []
+
     already = ", ".join(sorted({f.rule for f in confirmed})) or "none"
+    # Skip the API for unchanged code: key on file content + flagged rules + model.
+    key = hashlib.sha256(f"{MODEL}|{already}|{source}".encode("utf-8", "replace")).hexdigest()
+    cache = _cache_load()
+    if key in cache:
+        return [ReviewItem(**d) for d in cache[key]]
     prompt = (
         "You are a Python security reviewer. Below is Python source code. A "
         "deterministic rule engine already flagged these rule types: "
@@ -121,11 +177,38 @@ def heuristic_scan(source: str, confirmed) -> list[ReviewItem]:
             text = text.strip("`")
             text = text[text.find("["):]
         data = json.loads(text)
-        return [
+        items = [
             ReviewItem(line=int(d.get("line", 0)),
                        issue=str(d.get("issue", "")).strip(),
                        why=str(d.get("why", "")).strip())
             for d in data
         ]
-    except Exception:
+        cache[key] = [vars(i) for i in items]
+        _cache_save(cache)
+        return items
+    except Exception as e:
+        _warn("heuristic review", e)
         return []  # any parse/API failure -> no Tier 2 output, Tier 1 still fine
+
+
+# ----------------------------------------------------------------------
+# 3. Repo security summary narrative
+# ----------------------------------------------------------------------
+def summarize_repo(summary: dict) -> str:
+    """Short plain-English security overview of a repo, from Tier 1 numbers only."""
+    client = _get_client()
+    if client is None:
+        return ""
+    prompt = (
+        "You are a security engineer. Below are deterministic static-analysis "
+        "results for a code repository (JSON). Write a concise security summary "
+        "(max 120 words): overall posture, the most important risks, and the top "
+        "2-3 things to fix first. Plain text only: no markdown, no headings, no "
+        "bold, no title. Use ONLY the facts in the JSON; do not invent "
+        "findings or files.\n\n" + json.dumps(summary, indent=2)
+    )
+    try:
+        return _generate(client, prompt, max_tokens=400)
+    except Exception as e:
+        _warn("summary", e)
+        return ""

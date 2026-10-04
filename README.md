@@ -72,6 +72,17 @@ export GROQ_API_KEY=your_key_here     # PowerShell: $env:GROQ_API_KEY="your_key_
 python main.py src/ --ai
 ```
 
+**Security summary of a GitHub repo**: pass a `https://github.com/<owner>/<repo>` URL. VulnLens shallow-clones it to a temp directory (nothing in it is executed), scans every Python and C/C++ file, prints a summary, then deletes the clone. `--summary` gives the same summary for a local path.
+
+```bash
+python main.py https://github.com/owner/repo
+python main.py https://github.com/owner/repo --ai --format json   # summary + AI narrative in JSON
+```
+
+The summary is computed deterministically: overall risk rating, files and languages scanned, findings by severity and rule, how many are taint-confirmed, and the riskiest files. With `--ai`, a short plain-English narrative is added. It only describes those numbers and never adds findings. Files that can't be parsed (for example Python 2 code) are skipped and counted instead of aborting the scan. Requires `git` on your PATH.
+
+**AI model and free-tier safeguards**: the default model is `openai/gpt-oss-120b`. Groq retires models from time to time, so override it with `VULNLENS_MODEL` (list what your key can use with `client.models.list()`). To stay inside free-tier limits, VulnLens retries HTTP 429 rate-limit responses with exponential backoff, asks for one analogy per rule rather than per finding, caches Tier 2 results by file hash (`~/.vulnlens_ai_cache.json`) so unchanged files cost nothing on re-runs, and skips files over 40k characters. Billing only starts if you add a payment method in the Groq Console.
+
 ### Exit codes
 
 | Code | Meaning |

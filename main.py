@@ -13,6 +13,7 @@ The report is split into two sections on purpose:
   - NEEDS REVIEW -> Tier 2 AI heuristic findings (unconfirmed), enabled with --ai
 """
 import argparse
+import json
 import os
 import sys
 
@@ -20,6 +21,8 @@ from vulnlens.engine import Finding
 from vulnlens import scanner
 from vulnlens import ai_layer
 from vulnlens import formats
+from vulnlens import repo
+from vulnlens import summary as summary_mod
 
 
 def severity_rank(finding: Finding) -> int:
@@ -88,18 +91,33 @@ def main(argv=None) -> int:
         prog="vulnlens",
         description="Scan Python code for security issues (Tier 1 rules + optional Tier 2 AI).",
     )
-    parser.add_argument("target", help="A .py/.cpp file or a folder to scan.")
+    parser.add_argument("target", help="A .py/.c/.cpp file, a folder, or a "
+                                       "https://github.com/<owner>/<repo> URL.")
+    parser.add_argument("--summary", action="store_true",
+                        help="Print a repo-level security summary (always on for GitHub URLs). "
+                             "With --ai, adds a plain-English narrative.")
     parser.add_argument("--ai", action="store_true",
                         help="Also run the Tier 2 AI heuristic pass and analogy layer.")
     parser.add_argument("--format", choices=["text", "json", "sarif"], default="text",
                         help="Output format (default: text).")
     args = parser.parse_args(argv)
 
-    if not os.path.exists(args.target):
-        print(f"error: path not found: {args.target}", file=sys.stderr)
+    if repo.is_github_url(args.target):
+        try:
+            with repo.cloned(args.target) as root:
+                return _run(args, root, repo.repo_name(args.target), summary_on=True)
+        except RuntimeError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+    return _run(args, args.target, "", summary_on=args.summary)
+
+
+def _run(args, target: str, repo_label: str, summary_on: bool) -> int:
+    if not os.path.exists(target):
+        print(f"error: path not found: {target}", file=sys.stderr)
         return 2
 
-    files = scanner.collect_files(args.target)
+    files = scanner.collect_files(target)
     if not files:
         print("No supported source files (.py, .c/.cpp) found to scan.")
         return 0
@@ -117,28 +135,41 @@ def main(argv=None) -> int:
         ai_on = False
 
     # Scan every file. Store Tier 1 findings and (optionally) Tier 2 review items.
-    results = {}
+    results, skipped = {}, []
     for path in files:
-        findings = scanner.scan_file(path)
+        shown = os.path.relpath(path, target) if repo_label else path
+        try:
+            findings = scanner.scan_file(path)
+        except (SyntaxError, ValueError, RecursionError):
+            skipped.append(shown.replace(os.sep, "/"))   # e.g. Python 2 code or odd encodings
+            continue
         review = []
         if ai_on:
             findings = ai_layer.explain_findings(findings)   # fill analogies
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
                 review = ai_layer.heuristic_scan(fh.read(), findings)
-        results[path] = {"findings": findings, "review": review}
+        results[shown] = {"findings": findings, "review": review}
 
     confirmed_total = sum(len(d["findings"]) for d in results.values())
+
+    summ = summary_mod.build_summary(results, skipped, repo_label) if summary_on else None
+    narrative = ai_layer.summarize_repo(summ) if (summ and ai_on) else ""
 
     # Machine-readable formats: emit only the structured output (nothing else),
     # so the result can be piped straight to a file or a CI tool.
     if args.format == "json":
-        print(formats.to_json(results))
+        out = json.loads(formats.to_json(results))
+        if summ:
+            out["summary"] = dict(summ, narrative=narrative)
+        print(json.dumps(out, indent=2))
         return 1 if confirmed_total else 0
     if args.format == "sarif":
         print(formats.to_sarif(results))
         return 1 if confirmed_total else 0
 
     # Default: human-readable text report.
+    if summ:
+        print(summary_mod.format_text(summ, narrative) + "\n")
     print_confirmed(results)
     review_total = print_needs_review(results, ai_on)
 
