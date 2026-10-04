@@ -496,6 +496,22 @@ def test_tier2_prompt_names_the_language(monkeypatch):
     assert "C/C++ security reviewer" in seen[0] and "Python" not in seen[0]
 
 
+def test_tier2_prompt_numbers_the_source_lines(monkeypatch):
+    seen = []
+
+    class Completions:
+        @staticmethod
+        def create(**kw):
+            seen.append(kw["messages"][0]["content"])
+            msg = type("M", (), {"content": "[]"})
+            return type("R", (), {"choices": [type("C", (), {"message": msg})]})
+
+    client = type("Cl", (), {"chat": type("Ch", (), {"completions": Completions})})()
+    monkeypatch.setattr(ai_layer, "_get_client", lambda: client)
+    ai_layer.heuristic_scan("a = 1\nb = 2\nc = 3", [])
+    assert "1: a = 1\n2: b = 2\n3: c = 3" in seen[0]
+
+
 def test_analogy_cache_spans_files(monkeypatch):
     client, calls = _flaky_client(0, reply="like a door")
     monkeypatch.setattr(ai_layer, "_get_client", lambda: client)

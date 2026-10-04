@@ -156,10 +156,12 @@ def heuristic_scan(source: str, confirmed, language: str = "Python") -> list[Rev
 
     already = ", ".join(sorted({f.rule for f in confirmed})) or "none"
     # Skip the API for unchanged code: key on file content + flagged rules + model.
-    key = hashlib.sha256(f"{MODEL}|{language}|{already}|{source}".encode("utf-8", "replace")).hexdigest()
+    key = hashlib.sha256(f"v2|{MODEL}|{language}|{already}|{source}".encode("utf-8", "replace")).hexdigest()
     cache = _cache_load()
     if key in cache:
         return [ReviewItem(**d) for d in cache[key]]
+    # Number the lines: models can't reliably count them, so their "line" answers drift.
+    numbered = "\n".join(f"{n}: {ln}" for n, ln in enumerate(source.splitlines(), 1))
     prompt = (
         f"You are a {language} security reviewer. Below is {language} source code. A "
         "deterministic rule engine already flagged these rule types: "
@@ -170,8 +172,9 @@ def heuristic_scan(source: str, confirmed, language: str = "Python") -> list[Rev
         "looks risky, return an empty array.\n\n"
         "Respond ONLY with a JSON array of objects, each with keys "
         '"line" (int), "issue" (short label), "why" (one sentence). '
-        "No prose or markdown outside the JSON.\n\n"
-        f"```\n{source}\n```"
+        'Each source line is prefixed with its line number ("N: "); use those numbers '
+        'for "line". No prose or markdown outside the JSON.\n\n'
+        f"```\n{numbered}\n```"
     )
     try:
         text = _generate(client, prompt, max_tokens=600)
